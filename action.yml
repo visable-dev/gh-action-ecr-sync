@@ -1,0 +1,17 @@
+name: 'ECR sync'
+description: 'Github Action which syncs docker repos from dockerhub into private AWS ECR registry.'
+inputs:
+  ecr_registry:
+    description: 'ECR registry. E.g. `123456789100.dkr.ecr.eu-central-1.amazonaws.com`'
+    required: true
+  repo_file:
+    description: |
+      JSON file with all repos to sync. Format must match `{"<from>": "<to>"}`.
+      E.g. `{"renovate/ruby": "foobar/ruby"}` will sync `registry.docker.io/renovate/ruby` into `123456789100.dkr.ecr.eu-central-1.amazonaws.com/foobar/ruby`.
+    required: true
+runs:
+  using: node16
+  main: dist/index.js
+branding:
+  icon: refresh-ccw
+  color: gray-dark
