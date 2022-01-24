@@ -1,0 +1,4 @@
+{
+    "renovate/ruby": "foobar/ruby",
+    "nginx": "foobar/nginx"
+}
