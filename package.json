@@ -9,6 +9,7 @@
     "build": "npx @vercel/ncc build src/index.ts -o dist",
     "fix": "gts fix"
   },
+  "main": "dist/index.js",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/visable-dev/gh-action-ecr-sync.git"
