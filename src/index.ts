@@ -48,7 +48,8 @@ interface DockerAPITagsResponse {
 
 async function run() {
   const ecr = new ECR({});
-  console.log(Object.entries(repos));
+  const execOpts = {failOnStdErr: true, silent: !core.isDebug()};
+
   for (const [key, ecrRepo] of Object.entries(repos)) {
     let dockerhubRepo = key;
     if (!dockerhubRepo.includes('/')) {
@@ -75,6 +76,8 @@ async function run() {
       }
     }
 
+    const imagesTagsForCleanup = [];
+
     let nextUrl:
       | string
       | null = `https://hub.docker.com/v2/repositories/${dockerhubRepo}/tags?page_size=100`;
@@ -98,17 +101,11 @@ async function run() {
           // Tag is missing in ECR or not up-to-date, trigger sync
           core.info(`Syncing image ${fromImageTag} to ${toImageTag}`);
 
-          const execOpts = {failOnStdErr: true, silent: !core.isDebug()};
-
           await exec('docker', ['pull', fromImageTag], execOpts);
           await exec('docker', ['tag', fromImageTag, toImageTag], execOpts);
           await exec('docker', ['push', toImageTag], execOpts);
 
-          await exec(
-            'docker',
-            ['image', 'rm', toImageTag, fromImageTag],
-            execOpts
-          );
+          imagesTagsForCleanup.push(toImageTag, fromImageTag);
         }
       }
 
@@ -117,6 +114,12 @@ async function run() {
         nextUrl = response.next;
       }
     } while (nextUrl);
+
+    const deletionExecs = imagesTagsForCleanup.map(imageTag => {
+      core.debug(`Deleting ${imageTag}`);
+      return exec('docker', ['image', 'rm', imageTag], execOpts);
+    });
+    await Promise.all(deletionExecs);
   }
 }
 run();
