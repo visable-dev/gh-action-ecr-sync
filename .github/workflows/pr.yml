@@ -30,3 +30,4 @@ jobs:
         with:
           ecr_registry: ${{ secrets.AWS_ECR_REGISTRY_ID }}.dkr.ecr.eu-central-1.amazonaws.com
           repo_file: ./example/repos.json
+          tag_limit: 10

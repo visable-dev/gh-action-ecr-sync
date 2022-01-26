@@ -9,6 +9,10 @@ inputs:
       JSON file with all repos to sync. Format must match `{"<from>": "<to>"}`.
       E.g. `{"renovate/ruby": "foobar/ruby"}` will sync `registry.docker.io/renovate/ruby` into `123456789100.dkr.ecr.eu-central-1.amazonaws.com/foobar/ruby`.
     required: true
+  tag_limit:
+    description: Limit amount of tags per repo to sync. Tags are ordered by name (Z to A).
+    required: false
+    default: ""
 runs:
   using: node16
   main: dist/index.js

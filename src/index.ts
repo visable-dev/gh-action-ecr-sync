@@ -3,10 +3,12 @@ import * as fs from 'fs';
 import {ECR, paginateListImages} from '@aws-sdk/client-ecr';
 import got from 'got';
 import {exec} from '@actions/exec';
+import {DockerAPITagsResponse, ImageMap} from './interfaces';
 
 const inputs = {
   ecr_registry: core.getInput('ecr_registry', {required: true}),
   repo_file: core.getInput('repo_file', {required: true}),
+  tag_limit: core.getInput('tag_limit', {required: true}),
 };
 
 const errorHandler: NodeJS.UncaughtExceptionListener = error => {
@@ -21,66 +23,58 @@ process.on('unhandledRejection', errorHandler);
 const rawFile = fs.readFileSync(inputs.repo_file);
 const repos: Map<string, string> = JSON.parse(rawFile.toString());
 
-interface Image {
-  tag: string;
-  digest: string;
-}
+async function fetchAllECRImages(
+  client: ECR,
+  repoName: string
+): Promise<ImageMap> {
+  const ecrImages: ImageMap = {};
 
-interface ImageMap {
-  [key: string]: Image;
-}
-
-interface DockerHubImage {
-  architecture: string;
-  os: string;
-  digest: string;
-}
-
-interface DockerHubTag {
-  name: string;
-  images: DockerHubImage[];
-}
-
-interface DockerAPITagsResponse {
-  next: string | null;
-  results: DockerHubTag[];
+  for await (const page of paginateListImages(
+    {client},
+    {repositoryName: repoName}
+  )) {
+    if (page.imageIds) {
+      for (const imageId of page.imageIds) {
+        if (imageId.imageTag && imageId.imageDigest) {
+          ecrImages[imageId.imageTag] = {
+            digest: imageId.imageDigest,
+            tag: imageId.imageTag,
+          };
+        }
+      }
+    }
+  }
+  return ecrImages;
 }
 
 async function run() {
   const ecr = new ECR({});
   const execOpts = {failOnStdErr: true, silent: !core.isDebug()};
 
+  let tagLimit: number | null = Number.parseInt(inputs.tag_limit);
+  if (Number.isNaN(tagLimit)) {
+    tagLimit = null;
+  }
+
+  if (tagLimit !== null) {
+    core.info(`Tags to sync are limited to ${tagLimit} per repo.`);
+  }
+
   for (const [key, ecrRepo] of Object.entries(repos)) {
     let dockerhubRepo = key;
     if (!dockerhubRepo.includes('/')) {
       dockerhubRepo = 'library/' + dockerhubRepo;
     }
+    let currentTagCount = 0;
 
-    core.info(`Syncing ${dockerhubRepo} to ${ecrRepo}`);
+    core.startGroup(`Syncing repo ${dockerhubRepo} to ${ecrRepo}`);
 
-    const ecrImages: ImageMap = {};
-
-    for await (const page of paginateListImages(
-      {client: ecr},
-      {repositoryName: ecrRepo}
-    )) {
-      if (page.imageIds) {
-        for (const imageId of page.imageIds) {
-          if (imageId.imageTag && imageId.imageDigest) {
-            ecrImages[imageId.imageTag] = {
-              digest: imageId.imageDigest,
-              tag: imageId.imageTag,
-            };
-          }
-        }
-      }
-    }
-
-    const imagesTagsForCleanup = [];
+    const ecrImages = await fetchAllECRImages(ecr, ecrRepo);
+    const localImageTags: string[] = [];
 
     let nextUrl:
       | string
-      | null = `https://hub.docker.com/v2/repositories/${dockerhubRepo}/tags?page_size=100`;
+      | null = `https://hub.docker.com/v2/repositories/${dockerhubRepo}/tags?page_size=100&ordering=name`;
     do {
       const response = (await got.get(nextUrl).json()) as DockerAPITagsResponse;
 
@@ -89,37 +83,60 @@ async function run() {
           i => i.architecture === 'amd64' && i.os === 'linux'
         );
         if (amd64linux.length > 0) {
+          currentTagCount++;
+
+          let xOfYLabel = `${currentTagCount} |`;
+          if (tagLimit !== null) {
+            xOfYLabel = `${currentTagCount}/${tagLimit} |`;
+          }
+
           const fromImageTag = `${dockerhubRepo}:${tag.name}`;
           const toImageTag = `${inputs.ecr_registry}/${ecrRepo}:${tag.name}`;
           if (
             ecrImages[tag.name] &&
             ecrImages[tag.name].digest === amd64linux[0].digest
           ) {
-            core.info(`Image ${fromImageTag} is in sync with ${toImageTag}.`);
-            continue;
+            core.info(
+              `${xOfYLabel} Image ${fromImageTag} is in sync with ${toImageTag}.`
+            );
+          } else {
+            // Tag is missing in ECR or not up-to-date, trigger sync
+            core.info(
+              `${xOfYLabel} Syncing image ${fromImageTag} to ${toImageTag}`
+            );
+
+            await exec('docker', ['pull', fromImageTag], execOpts);
+            await exec('docker', ['tag', fromImageTag, toImageTag], execOpts);
+            await exec('docker', ['push', toImageTag], execOpts);
+
+            localImageTags.push(toImageTag, fromImageTag);
           }
-          // Tag is missing in ECR or not up-to-date, trigger sync
-          core.info(`Syncing image ${fromImageTag} to ${toImageTag}`);
+        }
 
-          await exec('docker', ['pull', fromImageTag], execOpts);
-          await exec('docker', ['tag', fromImageTag, toImageTag], execOpts);
-          await exec('docker', ['push', toImageTag], execOpts);
-
-          imagesTagsForCleanup.push(toImageTag, fromImageTag);
+        if (tagLimit !== null && currentTagCount >= tagLimit) {
+          core.info(
+            `Reached tag limit of ${tagLimit} for repo ${dockerhubRepo}. Skipping remaining.`
+          );
+          break;
         }
       }
 
-      nextUrl = null;
-      if (response.next) {
-        nextUrl = response.next;
+      nextUrl = response.next;
+      if (tagLimit !== null && currentTagCount >= tagLimit) {
+        nextUrl = null;
       }
     } while (nextUrl);
 
-    const deletionExecs = imagesTagsForCleanup.map(imageTag => {
-      core.debug(`Deleting ${imageTag}`);
-      return exec('docker', ['image', 'rm', imageTag], execOpts);
-    });
-    await Promise.all(deletionExecs);
+    if (localImageTags.length > 0) {
+      core.info(`Deleting ${localImageTags.length} local tags`);
+      const deletionExecs = localImageTags.map(imageTag => {
+        core.debug(`Deleting ${imageTag}`);
+        return exec('docker', ['image', 'rm', imageTag], execOpts);
+      });
+      await Promise.all(deletionExecs);
+    }
+
+    core.endGroup();
   }
 }
 run();
