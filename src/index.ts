@@ -74,7 +74,7 @@ async function run() {
 
     let nextUrl:
       | string
-      | null = `https://hub.docker.com/v2/repositories/${dockerhubRepo}/tags?page_size=100&ordering=name`;
+      | null = `https://hub.docker.com/v2/repositories/${dockerhubRepo}/tags?page_size=100&ordering=last_updated`;
     do {
       const response = (await got.get(nextUrl).json()) as DockerAPITagsResponse;
 

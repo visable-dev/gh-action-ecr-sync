@@ -10,7 +10,7 @@ inputs:
       E.g. `{"renovate/ruby": "foobar/ruby"}` will sync `registry.docker.io/renovate/ruby` into `123456789100.dkr.ecr.eu-central-1.amazonaws.com/foobar/ruby`.
     required: true
   tag_limit:
-    description: Limit amount of tags per repo to sync. Tags are ordered by name (Z to A).
+    description: Limit amount of tags per repo to sync. Tags are ordered by last updated date.
     required: false
     default: ""
 runs:
