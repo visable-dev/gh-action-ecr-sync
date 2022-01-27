@@ -97,4 +97,4 @@ The following inputs must be set:
 | ----- | ----------- |
 | `ecr_registry` | ECR registry. E.g. `123456789100.dkr.ecr.eu-central-1.amazonaws.com` |
 | `repo_file` | JSON file with all repos to sync. See above section for file format. |
-| `tag_limit` | Limit amount of tags per repo to sync. Tags are ordered by name (Z to A). |
+| `tag_limit` | Limit amount of tags per repo to sync. Tags are ordered by last updated date. |
