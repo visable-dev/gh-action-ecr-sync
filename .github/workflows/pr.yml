@@ -4,15 +4,15 @@ on:
 
 jobs:
   sync:
-    name: 'ECR Sync'
+    name: "ECR Sync"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v2
       - uses: actions/setup-node@v2
         with:
-          node-version: '16'
-          cache: 'npm'
+          node-version: "16"
+          cache: "npm"
       - run: npm install
       - run: npm run build
       - name: Configure AWS credentials
@@ -21,10 +21,15 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: eu-central-1
+      - name: Cleanup foobar/nginx repo
+        run: |
+          aws ecr list-images --registry-id ${{ secrets.AWS_ECR_REGISTRY_ID }} --repository-name foobar/nginx --no-paginate > images.json
+          aws ecr batch-delete-image --registry-id ${{ secrets.AWS_ECR_REGISTRY_ID }} --repository-name foobar/nginx --no-paginate --cli-input-json file://images.json
+          rm images.json
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v1
         with:
-          registries: '${{ secrets.AWS_ECR_REGISTRY_ID }}'
+          registries: "${{ secrets.AWS_ECR_REGISTRY_ID }}"
       - name: Sync repos
         uses: ./
         with:
