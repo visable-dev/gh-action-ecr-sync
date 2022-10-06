@@ -1,14 +1,14 @@
 import * as core from '@actions/core';
 import * as fs from 'fs';
-import {ECR, paginateListImages} from '@aws-sdk/client-ecr';
+import { ECR, paginateListImages } from '@aws-sdk/client-ecr';
 import got from 'got';
-import {exec} from '@actions/exec';
-import {DockerAPITagsResponse, ImageMap} from './interfaces';
+import { exec } from '@actions/exec';
+import { DockerAPITagsResponse, ImageMap } from './interfaces';
 
 const inputs = {
-  ecr_registry: core.getInput('ecr_registry', {required: true}),
-  repo_file: core.getInput('repo_file', {required: true}),
-  tag_limit: core.getInput('tag_limit', {required: true}),
+  ecr_registry: core.getInput('ecr_registry', { required: true }),
+  repo_file: core.getInput('repo_file', { required: true }),
+  tag_limit: core.getInput('tag_limit', { required: true }),
 };
 
 const errorHandler: NodeJS.UncaughtExceptionListener = error => {
@@ -30,8 +30,8 @@ async function fetchAllECRImages(
   const ecrImages: ImageMap = {};
 
   for await (const page of paginateListImages(
-    {client},
-    {repositoryName: repoName}
+    { client },
+    { repositoryName: repoName }
   )) {
     if (page.imageIds) {
       for (const imageId of page.imageIds) {
@@ -49,7 +49,7 @@ async function fetchAllECRImages(
 
 async function run() {
   const ecr = new ECR({});
-  const execOpts = {failOnStdErr: true, silent: !core.isDebug()};
+  const execOpts = { failOnStdErr: true, silent: !core.isDebug() };
 
   let tagLimit: number | null = Number.parseInt(inputs.tag_limit);
   if (Number.isNaN(tagLimit)) {
