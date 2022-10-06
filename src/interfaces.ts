@@ -23,4 +23,4 @@ interface DockerAPITagsResponse {
   results: DockerHubTag[];
 }
 
-export {Image, ImageMap, DockerHubImage, DockerHubTag, DockerAPITagsResponse};
+export { Image, ImageMap, DockerHubImage, DockerHubTag, DockerAPITagsResponse };
