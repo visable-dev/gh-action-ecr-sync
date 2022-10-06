@@ -129,11 +129,12 @@ async function run() {
 
     if (localImageTags.length > 0) {
       core.info(`Deleting ${localImageTags.length} local tags`);
-      const deletionExecs = localImageTags.map(imageTag => {
-        core.debug(`Deleting ${imageTag}`);
-        return exec('docker', ['image', 'rm', imageTag], execOpts);
-      });
-      await Promise.all(deletionExecs);
+      try {
+        core.debug(`Deleting tags: ${localImageTags.join(', ')}`);
+        await exec('docker', ['image', 'rm', ...localImageTags], execOpts)
+      } catch (e) {
+        core.error(`Deletion of tags failed: ${e}`)
+      }
     }
 
     core.endGroup();
