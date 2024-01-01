@@ -37,7 +37,7 @@
     "got": "^12.6.0"
   },
   "devDependencies": {
-    "@types/node": "^20.10.5",
+    "@types/node": "^20.10.6",
     "@vercel/ncc": "^0.38.1",
     "gts": "^5.2.0",
     "typescript": "^5.3.3"
