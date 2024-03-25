@@ -39,7 +39,7 @@
   "devDependencies": {
     "@types/node": "^20.11.28",
     "@vercel/ncc": "^0.38.1",
-    "gts": "^5.2.0",
+    "gts": "^5.3.0",
     "typescript": "^5.4.2"
   }
 }
