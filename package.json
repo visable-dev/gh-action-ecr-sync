@@ -34,7 +34,7 @@
     "@actions/core": "^1.11.1",
     "@actions/exec": "^1.1.1",
     "@aws-sdk/client-ecr": "^3.693.0",
-    "got": "^12.6.0"
+    "got": "^14.4.4"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
