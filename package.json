@@ -40,6 +40,6 @@
     "@types/node": "^22.9.0",
     "@vercel/ncc": "^0.38.3",
     "gts": "^6.0.2",
-    "typescript": "^5.6.3"
+    "typescript": "^5.7.2"
   }
 }
