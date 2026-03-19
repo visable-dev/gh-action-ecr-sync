@@ -1,28 +1,25 @@
 # gh-action-ecr-sync
 
-Github Action which syncs docker repos from dockerhub into private AWS ECR registry.
+GitHub Action to sync Docker Hub repositories into a private AWS ECR registry with **multi-arch support**.
 
 ## Problem
 
-Dockerhub has a strict ratelimiting even if you pay for a premium subscription. This can lead to issues if your infrastructure directly pulls images from Dockerhub.
+Docker Hub enforces rate limits that can disrupt CI/CD pipelines and infrastructure that pulls images directly. AWS ECR provides a private registry without pull limits and free intra-region traffic.
 
-AWS provides with ECR a private registry without limits and better availability. Additionally they do not charge for traffic if pull images in the same region.
+This action syncs Docker Hub repos into ECR on a schedule, keeping your infrastructure independent of Docker Hub availability and rate limits.
 
-Syncing dockerhub repos regularly (e.g. once per day) in your private ECR can avoid rate limit and increase the reliability of your infrastructure.
+## Features
 
-This action tries to provide a simple way of doing this.
+- **Multi-arch support** — syncs complete manifest lists (arm64, amd64, armv7, etc.) via `skopeo copy --all`
+- **Incremental sync** — compares manifest digests and only syncs changed or new tags
+- **No skopeo required** — automatically uses a Docker container if skopeo is not installed on the runner
+- **Tag limit** — configurable limit per repo to control how many tags are synced
 
 ## Prerequisites
 
-We expect that you already created your private AWS ECR registry, the repos which you want to be synced and know how to obtain credentials to pull/push to ECR.
-
-In addition, this action needs the `ecr:ListImages` permission on the ECR repos you want to sync.
-
-## Caveats
-
-This action cannot workaround the dockerhub ratelimiting completely.
-Meaning that you should not execute this action often and only sync images which you really need.
-Besides that we use the docker cli to pull the missing images, so to increase the ratelimit a bit you can buy a Dockerhub subscription and run `docker login` before this action.
+- AWS ECR repositories must already exist for the images you want to sync
+- IAM permissions: `ecr:ListImages`, `ecr:BatchGetImage`, `ecr:PutImage`, `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`, `ecr:BatchCheckLayerAvailability`
+- Docker must be available on the runner (for skopeo container fallback)
 
 ## Usage
 
@@ -30,71 +27,74 @@ Besides that we use the docker cli to pull the missing images, so to increase th
 name: ECR Sync
 on:
   schedule:
-    # Run once per night at 02:00
-    - cron: '0 2 * * *'
+    - cron: '15 1 * * *'
+  workflow_dispatch:
 
 jobs:
   sync:
-    name: 'ECR Sync'
     runs-on: ubuntu-latest
     steps:
-      # We expect a valid `./repos.json` file in this git repository
-      - name: Checkout
-        uses: actions/checkout@v2
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v1
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: eu-central-1
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v1
-        with:
-          registries: '123456789100'
-      - name: Optional Login to DockerHub
-        uses: docker/login-action@v1
+      - uses: actions/checkout@v6
+      - name: Dockerhub login
+        uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Sync repos
-        uses: visable-dev/gh-action-ecr-sync@v1
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          ecr_registry: ${{ steps.login-ecr.outputs.registry }}
+          aws-region: eu-central-1
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Sync repos
+        uses: visable-dev/gh-action-ecr-sync@v2
+        with:
+          ecr_registry: ${{ steps.ecr-login.outputs.registry }}
           repo_file: ./repos.json
-          tag_limit: 50
+          tag_limit: 25
 ```
 
 ## Repo file format
 
-The repo file is used to map the repo names from dockerhub to your custom names.
-It must be a valid JSON file which matches the format:
+A JSON file that maps Docker Hub repo names to ECR repo names:
+
 ```json
 {
-  "<from>": "<to>"
+  "<dockerhub-repo>": "<ecr-repo>"
 }
 ```
 
 ### Example
 
-Given `ecr_registry` as `123456789100.dkr.ecr.eu-central-1.amazonaws.com` and content of `repo_file`:
+Given `ecr_registry` as `123456789100.dkr.ecr.eu-central-1.amazonaws.com` and:
+
 ```json
 {
-  "renovate/ruby": "foobar/ruby",
+  "oryd/kratos": "oryd/kratos",
   "nginx": "foobar/nginx"
 }
 ```
 
-The action reads the file and syncs the repos:
-* `registry.docker.io/renovate/ruby` to `123456789100.dkr.ecr.eu-central-1.amazonaws.com/foobar/ruby`
-* `registry.docker.io/library/nginx` to `123456789100.dkr.ecr.eu-central-1.amazonaws.com/foobar/nginx`
+The action syncs:
+- `docker.io/oryd/kratos` → `123456789100.dkr.ecr.eu-central-1.amazonaws.com/oryd/kratos`
+- `docker.io/library/nginx` → `123456789100.dkr.ecr.eu-central-1.amazonaws.com/foobar/nginx`
+
+All architectures (amd64, arm64, etc.) are synced as a manifest list.
 
 ## Inputs
 
-The following inputs must be set:
+| Input | Required | Description |
+| ----- | -------- | ----------- |
+| `ecr_registry` | Yes | ECR registry URL, e.g. `123456789100.dkr.ecr.eu-central-1.amazonaws.com` |
+| `repo_file` | Yes | Path to JSON file with repo mappings (see above) |
+| `tag_limit` | No | Max number of tags per repo to sync, ordered by last updated. Default: unlimited |
 
-| input | description |
-| ----- | ----------- |
-| `ecr_registry` | ECR registry. E.g. `123456789100.dkr.ecr.eu-central-1.amazonaws.com` |
-| `repo_file` | JSON file with all repos to sync. See above section for file format. |
-| `tag_limit` | Limit amount of tags per repo to sync. Tags are ordered by last updated date. |
+## Migration from v1
+
+v2 replaces `docker pull/tag/push` with `skopeo copy --all`. Key differences:
+
+- Images are now pushed as **manifest lists** (Image Index) instead of single-arch manifests
+- Existing single-arch images in ECR are preserved but will be replaced with manifest lists on next sync
+- Docker Hub login is now **required** (was optional in v1) to avoid rate limits with skopeo
+- No `sudo` or package manager access required — skopeo runs via Docker container if not natively available
