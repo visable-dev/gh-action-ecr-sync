@@ -1,20 +1,20 @@
 import * as core from '@actions/core';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
-import { ECR, paginateListImages } from '@aws-sdk/client-ecr';
+import {ECR, paginateListImages} from '@aws-sdk/client-ecr';
 import got from 'got';
-import { exec } from '@actions/exec';
-import { DockerAPITagsResponse, ImageMap } from './interfaces';
+import {exec, getExecOutput} from '@actions/exec';
+import {DockerAPITagsResponse, ImageMap} from './interfaces';
 
 const inputs = {
-  ecr_registry: core.getInput('ecr_registry', { required: true }),
-  repo_file: core.getInput('repo_file', { required: true }),
-  tag_limit: core.getInput('tag_limit', { required: true }),
+  ecr_registry: core.getInput('ecr_registry', {required: true}),
+  repo_file: core.getInput('repo_file', {required: true}),
+  tag_limit: core.getInput('tag_limit', {required: true}),
 };
 
 const errorHandler: NodeJS.UncaughtExceptionListener = error => {
   core.setFailed(error);
-  // eslint-disable-next-line no-process-exit
-  process.exit(1);
+  throw error;
 };
 
 process.on('uncaughtException', errorHandler);
@@ -25,13 +25,13 @@ const repos: Map<string, string> = JSON.parse(rawFile.toString());
 
 async function fetchAllECRImages(
   client: ECR,
-  repoName: string
+  repoName: string,
 ): Promise<ImageMap> {
   const ecrImages: ImageMap = {};
 
   for await (const page of paginateListImages(
-    { client },
-    { repositoryName: repoName }
+    {client},
+    {repositoryName: repoName},
   )) {
     if (page.imageIds) {
       for (const imageId of page.imageIds) {
@@ -47,9 +47,41 @@ async function fetchAllECRImages(
   return ecrImages;
 }
 
+async function getSourceDigest(imageRef: string): Promise<string | null> {
+  try {
+    const {stdout} = await getExecOutput(
+      'skopeo',
+      ['inspect', '--raw', `docker://${imageRef}`],
+      {silent: true},
+    );
+    return 'sha256:' + crypto.createHash('sha256').update(stdout).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+async function ensureSkopeo() {
+  try {
+    await getExecOutput('skopeo', ['--version'], {silent: true});
+    core.info('skopeo is already installed.');
+  } catch {
+    core.info('Installing skopeo...');
+    await exec('sudo', ['apt-get', 'update', '-qq'], {silent: true});
+    await exec('sudo', ['apt-get', 'install', '-y', '-qq', 'skopeo'], {
+      silent: true,
+    });
+    const {stdout} = await getExecOutput('skopeo', ['--version'], {
+      silent: true,
+    });
+    core.info(`Installed ${stdout.trim()}.`);
+  }
+}
+
 async function run() {
+  await ensureSkopeo();
+
   const ecr = new ECR({});
-  const execOpts = { failOnStdErr: true, silent: !core.isDebug() };
+  const execOpts = {silent: !core.isDebug()};
 
   let tagLimit: number | null = Number.parseInt(inputs.tag_limit);
   if (Number.isNaN(tagLimit)) {
@@ -70,52 +102,50 @@ async function run() {
     core.startGroup(`Syncing repo ${dockerhubRepo} to ${ecrRepo}`);
 
     const ecrImages = await fetchAllECRImages(ecr, ecrRepo);
-    const localImageTags: string[] = [];
 
-    let nextUrl:
-      | string
-      | null = `https://hub.docker.com/v2/repositories/${dockerhubRepo}/tags?page_size=100&ordering=last_updated`;
+    let nextUrl: string | null =
+      `https://hub.docker.com/v2/repositories/${dockerhubRepo}/tags?page_size=100&ordering=last_updated`;
     do {
       const response = (await got.get(nextUrl).json()) as DockerAPITagsResponse;
 
       for (const tag of response.results) {
-        const amd64linux = tag.images.filter(
-          i => i.architecture === 'amd64' && i.os === 'linux'
-        );
-        if (amd64linux.length > 0) {
-          currentTagCount++;
+        const linuxImages = tag.images.filter(i => i.os === 'linux');
+        if (linuxImages.length === 0) continue;
 
-          let xOfYLabel = `${currentTagCount} |`;
-          if (tagLimit !== null) {
-            xOfYLabel = `${currentTagCount}/${tagLimit} |`;
+        currentTagCount++;
+
+        const xOfYLabel =
+          tagLimit !== null
+            ? `${currentTagCount}/${tagLimit} |`
+            : `${currentTagCount} |`;
+
+        const fromRef = `docker.io/${dockerhubRepo}:${tag.name}`;
+        const toRef = `${inputs.ecr_registry}/${ecrRepo}:${tag.name}`;
+
+        if (ecrImages[tag.name]) {
+          const sourceDigest = await getSourceDigest(fromRef);
+          if (sourceDigest && sourceDigest === ecrImages[tag.name].digest) {
+            core.info(`${xOfYLabel} ${fromRef} is in sync.`);
+            if (tagLimit !== null && currentTagCount >= tagLimit) break;
+            continue;
           }
-
-          const fromImageTag = `${dockerhubRepo}:${tag.name}`;
-          const toImageTag = `${inputs.ecr_registry}/${ecrRepo}:${tag.name}`;
-          if (
-            ecrImages[tag.name] &&
-            ecrImages[tag.name].digest === amd64linux[0].digest
-          ) {
-            core.info(
-              `${xOfYLabel} Image ${fromImageTag} is in sync with ${toImageTag}.`
-            );
-          } else {
-            // Tag is missing in ECR or not up-to-date, trigger sync
-            core.info(
-              `${xOfYLabel} Syncing image ${fromImageTag} to ${toImageTag}`
-            );
-
-            await exec('docker', ['pull', fromImageTag], execOpts);
-            await exec('docker', ['tag', fromImageTag, toImageTag], execOpts);
-            await exec('docker', ['push', toImageTag], execOpts);
-
-            localImageTags.push(toImageTag, fromImageTag);
-          }
+          core.info(
+            `${xOfYLabel} ${fromRef} has changed, re-syncing (multi-arch)...`,
+          );
+        } else {
+          core.info(`${xOfYLabel} ${fromRef} is new, syncing (multi-arch)...`);
         }
+
+        await exec(
+          'skopeo',
+          ['copy', '--all', `docker://${fromRef}`, `docker://${toRef}`],
+          execOpts,
+        );
+        core.info(`${xOfYLabel} ✓ ${tag.name} synced.`);
 
         if (tagLimit !== null && currentTagCount >= tagLimit) {
           core.info(
-            `Reached tag limit of ${tagLimit} for repo ${dockerhubRepo}. Skipping remaining.`
+            `Reached tag limit of ${tagLimit} for repo ${dockerhubRepo}. Skipping remaining.`,
           );
           break;
         }
@@ -127,17 +157,7 @@ async function run() {
       }
     } while (nextUrl);
 
-    if (localImageTags.length > 0) {
-      core.info(`Deleting ${localImageTags.length} local tags`);
-      try {
-        core.debug(`Deleting tags: ${localImageTags.join(', ')}`);
-        await exec('docker', ['image', 'rm', ...localImageTags], execOpts)
-      } catch (e) {
-        core.error(`Deletion of tags failed: ${e}`)
-      }
-    }
-
     core.endGroup();
   }
 }
-run();
+void run();

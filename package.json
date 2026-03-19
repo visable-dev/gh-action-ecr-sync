@@ -1,7 +1,7 @@
 {
   "name": "gh-action-ecr-sync",
   "version": "1.0.0",
-  "description": "Visualizes multiple terraform plan outputs after `terragrunt run-all plan` run",
+  "description": "Github Action to sync Docker Hub images into private AWS ECR with multi-arch support",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "lint": "gts lint",
@@ -15,7 +15,7 @@
     "url": "git+https://github.com/visable-dev/gh-action-ecr-sync.git"
   },
   "engines": {
-    "node": ">=16"
+    "node": ">=20"
   },
   "keywords": [
     "actions",
