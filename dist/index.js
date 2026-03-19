@@ -39947,9 +39947,12 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 const core = __nccwpck_require__(7484);
 const crypto = __nccwpck_require__(6982);
 const fs = __nccwpck_require__(9896);
+const os = __nccwpck_require__(857);
+const path = __nccwpck_require__(6928);
 const client_ecr_1 = __nccwpck_require__(8249);
 const got_1 = __nccwpck_require__(4605);
 const exec_1 = __nccwpck_require__(5236);
+const SKOPEO_IMAGE = 'quay.io/skopeo/stable:latest';
 const inputs = {
     ecr_registry: core.getInput('ecr_registry', { required: true }),
     repo_file: core.getInput('repo_file', { required: true }),
@@ -39963,6 +39966,39 @@ process.on('uncaughtException', errorHandler);
 process.on('unhandledRejection', errorHandler);
 const rawFile = fs.readFileSync(inputs.repo_file);
 const repos = JSON.parse(rawFile.toString());
+let useDocker = false;
+function skopeoCmd(args) {
+    if (!useDocker) {
+        return { cmd: 'skopeo', args };
+    }
+    const authFile = path.join(os.homedir(), '.docker', 'config.json');
+    return {
+        cmd: 'docker',
+        args: [
+            'run',
+            '--rm',
+            '-v',
+            `${authFile}:/auth.json:ro`,
+            SKOPEO_IMAGE,
+            ...args,
+            '--authfile',
+            '/auth.json',
+        ],
+    };
+}
+async function ensureSkopeo() {
+    try {
+        await (0, exec_1.getExecOutput)('skopeo', ['--version'], { silent: true });
+        core.info('skopeo is available natively.');
+        return;
+    }
+    catch {
+        core.info('skopeo not found on runner, using Docker container...');
+    }
+    await (0, exec_1.exec)('docker', ['pull', SKOPEO_IMAGE], { silent: !core.isDebug() });
+    useDocker = true;
+    core.info(`Using skopeo via ${SKOPEO_IMAGE}.`);
+}
 async function fetchAllECRImages(client, repoName) {
     const ecrImages = {};
     for await (const page of (0, client_ecr_1.paginateListImages)({ client }, { repositoryName: repoName })) {
@@ -39981,28 +40017,13 @@ async function fetchAllECRImages(client, repoName) {
 }
 async function getSourceDigest(imageRef) {
     try {
-        const { stdout } = await (0, exec_1.getExecOutput)('skopeo', ['inspect', '--raw', `docker://${imageRef}`], { silent: true });
-        return 'sha256:' + crypto.createHash('sha256').update(stdout).digest('hex');
+        const { cmd, args } = skopeoCmd(['inspect', '--raw', `docker://${imageRef}`]);
+        const { stdout } = await (0, exec_1.getExecOutput)(cmd, args, { silent: true });
+        const hash = crypto.createHash('sha256').update(stdout).digest('hex');
+        return 'sha256:' + hash;
     }
     catch {
         return null;
-    }
-}
-async function ensureSkopeo() {
-    try {
-        await (0, exec_1.getExecOutput)('skopeo', ['--version'], { silent: true });
-        core.info('skopeo is already installed.');
-    }
-    catch {
-        core.info('Installing skopeo...');
-        await (0, exec_1.exec)('sudo', ['apt-get', 'update', '-qq'], { silent: true });
-        await (0, exec_1.exec)('sudo', ['apt-get', 'install', '-y', '-qq', 'skopeo'], {
-            silent: true,
-        });
-        const { stdout } = await (0, exec_1.getExecOutput)('skopeo', ['--version'], {
-            silent: true,
-        });
-        core.info(`Installed ${stdout.trim()}.`);
     }
 }
 async function run() {
@@ -40050,7 +40071,13 @@ async function run() {
                 else {
                     core.info(`${xOfYLabel} ${fromRef} is new, syncing (multi-arch)...`);
                 }
-                await (0, exec_1.exec)('skopeo', ['copy', '--all', `docker://${fromRef}`, `docker://${toRef}`], execOpts);
+                const { cmd, args } = skopeoCmd([
+                    'copy',
+                    '--all',
+                    `docker://${fromRef}`,
+                    `docker://${toRef}`,
+                ]);
+                await (0, exec_1.exec)(cmd, args, execOpts);
                 core.info(`${xOfYLabel} ✓ ${tag.name} synced.`);
                 if (tagLimit !== null && currentTagCount >= tagLimit) {
                     core.info(`Reached tag limit of ${tagLimit} for repo ${dockerhubRepo}. Skipping remaining.`);

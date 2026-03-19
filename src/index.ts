@@ -1,10 +1,14 @@
 import * as core from '@actions/core';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import {ECR, paginateListImages} from '@aws-sdk/client-ecr';
 import got from 'got';
 import {exec, getExecOutput} from '@actions/exec';
 import {DockerAPITagsResponse, ImageMap} from './interfaces';
+
+const SKOPEO_IMAGE = 'quay.io/skopeo/stable:latest';
 
 const inputs = {
   ecr_registry: core.getInput('ecr_registry', {required: true}),
@@ -22,6 +26,42 @@ process.on('unhandledRejection', errorHandler);
 
 const rawFile = fs.readFileSync(inputs.repo_file);
 const repos: Map<string, string> = JSON.parse(rawFile.toString());
+
+let useDocker = false;
+
+function skopeoCmd(args: string[]): {cmd: string; args: string[]} {
+  if (!useDocker) {
+    return {cmd: 'skopeo', args};
+  }
+  const authFile = path.join(os.homedir(), '.docker', 'config.json');
+  return {
+    cmd: 'docker',
+    args: [
+      'run',
+      '--rm',
+      '-v',
+      `${authFile}:/auth.json:ro`,
+      SKOPEO_IMAGE,
+      ...args,
+      '--authfile',
+      '/auth.json',
+    ],
+  };
+}
+
+async function ensureSkopeo() {
+  try {
+    await getExecOutput('skopeo', ['--version'], {silent: true});
+    core.info('skopeo is available natively.');
+    return;
+  } catch {
+    core.info('skopeo not found on runner, using Docker container...');
+  }
+
+  await exec('docker', ['pull', SKOPEO_IMAGE], {silent: !core.isDebug()});
+  useDocker = true;
+  core.info(`Using skopeo via ${SKOPEO_IMAGE}.`);
+}
 
 async function fetchAllECRImages(
   client: ECR,
@@ -49,31 +89,12 @@ async function fetchAllECRImages(
 
 async function getSourceDigest(imageRef: string): Promise<string | null> {
   try {
-    const {stdout} = await getExecOutput(
-      'skopeo',
-      ['inspect', '--raw', `docker://${imageRef}`],
-      {silent: true},
-    );
-    return 'sha256:' + crypto.createHash('sha256').update(stdout).digest('hex');
+    const {cmd, args} = skopeoCmd(['inspect', '--raw', `docker://${imageRef}`]);
+    const {stdout} = await getExecOutput(cmd, args, {silent: true});
+    const hash = crypto.createHash('sha256').update(stdout).digest('hex');
+    return 'sha256:' + hash;
   } catch {
     return null;
-  }
-}
-
-async function ensureSkopeo() {
-  try {
-    await getExecOutput('skopeo', ['--version'], {silent: true});
-    core.info('skopeo is already installed.');
-  } catch {
-    core.info('Installing skopeo...');
-    await exec('sudo', ['apt-get', 'update', '-qq'], {silent: true});
-    await exec('sudo', ['apt-get', 'install', '-y', '-qq', 'skopeo'], {
-      silent: true,
-    });
-    const {stdout} = await getExecOutput('skopeo', ['--version'], {
-      silent: true,
-    });
-    core.info(`Installed ${stdout.trim()}.`);
   }
 }
 
@@ -136,11 +157,13 @@ async function run() {
           core.info(`${xOfYLabel} ${fromRef} is new, syncing (multi-arch)...`);
         }
 
-        await exec(
-          'skopeo',
-          ['copy', '--all', `docker://${fromRef}`, `docker://${toRef}`],
-          execOpts,
-        );
+        const {cmd, args} = skopeoCmd([
+          'copy',
+          '--all',
+          `docker://${fromRef}`,
+          `docker://${toRef}`,
+        ]);
+        await exec(cmd, args, execOpts);
         core.info(`${xOfYLabel} ✓ ${tag.name} synced.`);
 
         if (tagLimit !== null && currentTagCount >= tagLimit) {
