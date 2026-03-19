@@ -1,5 +1,5 @@
 name: 'ECR sync'
-description: 'Github Action which syncs docker repos from dockerhub into private AWS ECR registry.'
+description: 'Syncs Docker images from Docker Hub into private AWS ECR with multi-arch support via skopeo.'
 inputs:
   ecr_registry:
     description: 'ECR registry. E.g. `123456789100.dkr.ecr.eu-central-1.amazonaws.com`'
@@ -14,7 +14,7 @@ inputs:
     required: false
     default: ""
 runs:
-  using: node16
+  using: node20
   main: dist/index.js
 branding:
   icon: refresh-ccw
